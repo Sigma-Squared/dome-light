@@ -1,13 +1,19 @@
 // DomeLight - 2x8 WS2812B array on a Waveshare RP2040-Zero.
 //
-// CALIBRATION SWEEP. The LEDs ramp slowly from completely dark up to full
-// red and back down, so you can pick the levels that look right for night and
-// for day. Each level is printed over USB serial (`make monitor`), together
-// with the photoresistor reading.
+// At power-up, before any LED is lit, it reads the photoresistor once and
+// picks a mode for the whole session:
 //
-// NO POWER CAP. Full red is ~300mA by FastLED's estimate, which is within a
-// USB port's 500mA. Nothing limits current any more, so don't switch to a
-// whiter colour while on USB: full white is ~710mA or more.
+//   Day   (reading >= NIGHT_THRESHOLD): amber at full brightness
+//   Night (reading <  NIGHT_THRESHOLD): red at 75%
+//
+// It then plays the boot animation (Bloom snap) straight into that mode's
+// colour and brightness, and stays there. Reading only at boot, with the LEDs
+// still off, keeps the decision consistent: the sensor can see the dome light
+// itself, so a reading taken with the LEDs on would be skewed by their glow.
+//
+// NO POWER CAP. Day amber is ~350mA by FastLED's estimate, within a USB port's
+// 500mA. Nothing limits current, so don't switch to a whiter colour while on
+// USB: full white is ~710mA or more.
 //
 // Wiring:
 //   Array DIN -> GP6 (pad 17, right edge), ideally through a 330-470 ohm
@@ -16,12 +22,18 @@
 //   Array GND -> board GND (always, whatever powers the array)
 //   Array 5V  -> board 5V pad while on USB; a buck converter once mounted.
 //                Read the README's power section before switching over.
-//   Photoresistor across GP15 and GP26 (pads 8 and 7), no other parts.
+//   Photoresistor across GP15 and GP26 (pads 8 and 7), no other parts. It sits
+//   behind tinted plastic, which is why the night threshold is as high as 500.
 
 #include <Arduino.h>
 #include <FastLED.h>
 #include <hardware/adc.h>
 #include <hardware/gpio.h>
+
+// Serial debug output: the mode, the boot reading it was based on, and the live
+// light reading, once a second over USB (`make monitor`). When false, none of
+// the serial code is compiled in.
+#define DEBUG          false
 
 #define DATA_PIN       6
 #define LED_TYPE       WS2812B
@@ -31,9 +43,20 @@
 #define ARRAY_HEIGHT   2
 #define NUM_LEDS       (ARRAY_WIDTH * ARRAY_HEIGHT)
 
-// Sweep timing. One full cycle: ramp up, hold at full, ramp down, hold dark.
-#define RAMP_MS        12000
-#define HOLD_MS         3000
+// Day/night decision, from the photoresistor reading at boot (0..4095).
+// Below this is night. See CALIBRATION.md for the readings it's based on.
+#define NIGHT_THRESHOLD   500
+
+// The two modes. See settings.md.
+static const CRGB DAY_COLOR        = CRGB(255, 90, 10);   // amber
+static const uint8_t DAY_BRIGHTNESS   = 255;              // 100%
+static const CRGB NIGHT_COLOR      = CRGB(255, 0, 0);     // red
+static const uint8_t NIGHT_BRIGHTNESS = 191;              // 75%
+
+// Boot animation timing: the gap between each pair of columns switching on.
+// Four steps (the centre pair, then three more pairs out to the ends), so the
+// array is fully lit at 3 x this.
+#define BOOT_STEP_MS   37
 
 // Photoresistor. GP15 is driven HIGH as its 3.3V supply; GP26 (analog channel
 // 0) reads the voltage across the chip's internal pull-down, which stands in
@@ -42,6 +65,42 @@
 #define LDR_SENSE_PIN  26
 
 CRGB leds[NUM_LEDS];
+
+// Decided once at boot.
+static bool     gNight = false;
+static uint16_t gBootReading = 0;
+static CRGB     gColor;
+
+// Most 2x8 arrays are one strip folded back on itself: row 0 runs left to
+// right and row 1 runs right to left. The boot animation is symmetric about
+// the middle, so it looks the same even if this assumption is wrong.
+static uint8_t XY(uint8_t x, uint8_t y) {
+  if (y & 1) return y * ARRAY_WIDTH + (ARRAY_WIDTH - 1 - x);
+  return y * ARRAY_WIDTH + x;
+}
+
+static void setColumn(uint8_t x, const CRGB &c) {
+  for (uint8_t y = 0; y < ARRAY_HEIGHT; y++) leds[XY(x, y)] = c;
+}
+
+// Column distance from the middle: 0 for the two centre columns, 3 at the ends.
+static uint8_t centreRing(uint8_t x) {
+  return (x < ARRAY_WIDTH / 2) ? (ARRAY_WIDTH / 2 - 1 - x) : (x - ARRAY_WIDTH / 2);
+}
+
+// Boot animation: Bloom snap. Pairs of columns switch straight from off to the
+// mode's colour at full mode brightness, centre first and working outward,
+// one pair every BOOT_STEP_MS. No fading and no colour change along the way.
+static void bootAnimation(const CRGB &color) {
+  const uint8_t steps = ARRAY_WIDTH / 2;
+  for (uint8_t ring = 0; ring < steps; ring++) {
+    for (uint8_t x = 0; x < ARRAY_WIDTH; x++) {
+      setColumn(x, (centreRing(x) <= ring) ? color : CRGB::Black);
+    }
+    FastLED.show();
+    if (ring < steps - 1) delay(BOOT_STEP_MS);
+  }
+}
 
 // Read through the Pico SDK rather than analogRead(): analogRead() turns the
 // pin's pull-down off the first time it reads a pin, and without it the input
@@ -65,51 +124,39 @@ static uint16_t readLight() {
   return sum / 16;
 }
 
-// Brightness for the current point in the sweep, 0..255.
-//
-// The ramp is squared rather than linear. Eyes are far more sensitive to
-// changes at the dim end, so a linear ramp would seem to jump out of darkness
-// and then spend most of its time looking "about full". Squaring spends more
-// of the ramp at low levels, which is where the night setting will be.
-static uint8_t sweepBrightness(uint32_t now) {
-  const uint32_t cycle = 2 * RAMP_MS + 2 * HOLD_MS;
-  uint32_t t = now % cycle;
-
-  uint32_t x;   // linear position 0..255
-  if (t < RAMP_MS) {
-    x = t * 255 / RAMP_MS;                               // ramping up
-  } else if (t < RAMP_MS + HOLD_MS) {
-    x = 255;                                             // holding at full
-  } else if (t < 2 * RAMP_MS + HOLD_MS) {
-    x = 255 - (t - RAMP_MS - HOLD_MS) * 255 / RAMP_MS;   // ramping down
-  } else {
-    x = 0;                                               // holding dark
-  }
-  return (x * x) / 255;
-}
-
 void setup() {
-  Serial.begin(115200);
+  // 1. Read the room while the LEDs are still off.
   setupLightSensor();
+  gBootReading = readLight();
+  gNight = gBootReading < NIGHT_THRESHOLD;
+  gColor = gNight ? NIGHT_COLOR : DAY_COLOR;
 
+  // 2. Light up in that mode.
   FastLED.addLeds<LED_TYPE, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS);
-
-  // Show each brightness level as the real hardware level. With dithering on,
-  // FastLED flickers between neighbouring levels to fake in-between values,
-  // which shimmers visibly at the dim end and would make the low levels hard
-  // to judge.
+  FastLED.setBrightness(gNight ? NIGHT_BRIGHTNESS : DAY_BRIGHTNESS);
+  // Show the 75% night level as one steady hardware level. With dithering on,
+  // FastLED flickers between neighbouring levels to fake in-between values.
   FastLED.setDither(DISABLE_DITHER);
+  bootAnimation(gColor);
 
-  fill_solid(leds, NUM_LEDS, CRGB::Red);
+#if DEBUG
+  Serial.begin(115200);
+#endif
 }
 
 void loop() {
-  uint8_t brightness = sweepBrightness(millis());
-  FastLED.setBrightness(brightness);
+  // Steady in the boot-time mode. Re-sending the frame is cheap, and it means
+  // the LEDs recover on their own if the array is powered up after the board.
+  fill_solid(leds, NUM_LEDS, gColor);
   FastLED.show();
   delay(20);
 
-  EVERY_N_MILLISECONDS(500) {
-    Serial.printf("brightness %3u/255 | light %4u/4095\n", brightness, readLight());
+#if DEBUG
+  // Report the mode and what it was based on, plus the live reading for
+  // reference. The live reading doesn't change the mode.
+  EVERY_N_MILLISECONDS(1000) {
+    Serial.printf("mode %s (boot reading %u, threshold %u) | light now %u\n",
+                  gNight ? "NIGHT" : "DAY", gBootReading, NIGHT_THRESHOLD, readLight());
   }
+#endif
 }

@@ -3,10 +3,10 @@
 FastLED on a Waveshare RP2040-Zero driving a 2x8 WS2812B array (16 LEDs) on
 GP6, with a photoresistor for sensing room light.
 
-The plan is for the light to follow the room: full red during the day and
-dimmer at night. That isn't built yet. For now the firmware runs a
-**calibration sweep** and reports the light sensor, which is how the day and
-night levels in [`settings.md`](settings.md) were chosen.
+At power-up it reads the room once, before any LED is lit, and picks **day**
+(amber at full brightness) or **night** (red at 75%). It then plays a quick
+boot animation into that mode and stays there. The settings are in
+[`settings.md`](settings.md).
 
 ```
 dome-light-final/
@@ -32,22 +32,46 @@ dome-light-final/
 | Array 5V | see *Power* below |
 | Photoresistor | across **GP15** and **GP26** (pads 8 and 7), no other parts |
 
-## Current firmware: calibration sweep
+## Current firmware
 
-The LEDs ramp from completely dark up to full red and back down on a
-30-second loop: 12 s up, 3 s at full, 12 s down, 3 s dark. Twice a second it
-prints the brightness and the light reading over USB serial (`make monitor`):
+1. **Read the room, once, with the LEDs still off.** Below 500
+   (`NIGHT_THRESHOLD`) is night; 500 or more is day. The sensor sits behind
+   tinted plastic, which is why the threshold is that high.
+2. **Boot animation: Bloom snap**, in the chosen mode's colour and brightness.
+   Pairs of columns switch straight from off to full, starting with the
+   centre pair and working out to the ends, one pair every 37 ms
+   (`BOOT_STEP_MS`). The array is fully lit at ~111 ms. There's no fading and
+   no colour change. It's symmetric about the middle, so it looks right
+   whichever way the rows are wired.
+3. **Then steady in that mode** until the next power-up:
+
+| Mode | Colour | Brightness |
+|---|---|---|
+| Day | Amber `(255, 90, 10)` | 255 (100%) |
+| Night | Red `(255, 0, 0)` | 191 (75%) |
+
+**Debug output** is off by default. Set `DEBUG` to `true` at the top of
+`src/DomeLight.cpp` and reflash, and once a second it prints the mode, the boot
+reading it was based on, and the live reading over serial (`make monitor`).
+With `DEBUG` false, none of the serial code is compiled in. The live reading
+doesn't change the mode:
 
 ```
-brightness 191/255 | light 2381/4095
+mode DAY (boot reading 932, threshold 500) | light now 1457
 ```
 
-- **The ramp is squared, not linear.** Eyes notice changes at the dim end far
-  more than near full, so a linear ramp would seem to jump out of darkness and
-  then look "about full" for most of the sweep.
-- **Dithering is off.** Each step is a real hardware level rather than
-  FastLED flickering between levels to fake in-between values.
-- **There is no power cap.** Full red is ~300 mA by FastLED's estimate, within
+**Why read only at boot:** the sensor sees the dome light itself. In the line
+above, the LEDs raise the reading from 932 to ~1460. A reading taken with the
+lights on would be skewed by their own glow.
+
+**To test night mode, unplug and replug the board** with the sensor covered or
+the room dark. Don't use the RESET button: the LEDs keep their last colour
+while the board restarts, so the boot reading would include their glow.
+
+The calibration sweep used to choose the day and night levels (black to full
+red and back, on a 30-second loop) is in the git history at commit `c969d8b`.
+
+- **There is no power cap.** Day amber is ~350 mA by FastLED's estimate, within
   a USB port's 500 mA. Nothing limits current, so **don't switch to white or
   other bright mixed colours while on USB**: full white is ~710 mA or more, and
   the board has no fuse.
@@ -55,15 +79,17 @@ brightness 191/255 | light 2381/4095
 ## Boot animation demos
 
 [`demos/BootAnimations/`](demos/BootAnimations/BootAnimations.cpp) is a
-separate sketch that loops through eight boot-up animation ideas: Ember, Bloom,
-Scanner, Sparks, Heartbeat, Progress bar, Sunset and Orbit. Each one reaches
-steady full red within 500 ms. Before each animation, dim dots show its number,
-and the time each one takes to reach full red is printed over serial.
+separate sketch with nine boot-up animation ideas: Converge, Bloom, Spark
+bloom, Sparks, Spark sweep, Progress bar, Split bars, Slant wipe and Bloom
+snap. Each one reaches steady full red within 500 ms. Before each animation,
+dim dots show its number, and the time each one takes to reach full red is
+printed over serial.
 
-**Bloom** (#2) is the current favourite: it lights from the middle outward in
-about 300 ms, with the advancing edges coming in amber and deepening to red.
-Set `FOCUS` at the top of the file to an animation's number to loop just that
-one.
+**Bloom snap** (#9) is the one the firmware uses: Bloom's middle-out order with
+no fading and no colour change, reaching full red in ~111 ms. Set `PLAYLIST` at
+the top of the file to choose which animations play, in order (`{ 0 }` plays
+all of them). With a single entry, the number dots are skipped and it just
+repeats.
 
 ```bash
 make upload SKETCH=demos/BootAnimations
@@ -139,8 +165,8 @@ make upload
 ```
 
 The port is auto-detected. If the board doesn't show up as a serial port, hold
-**BOOT** while plugging it in and run `make uf2` instead. To watch the sweep and
-the light readings:
+**BOOT** while plugging it in and run `make uf2` instead. To watch the mode and
+light readings (needs `DEBUG` set to `true`):
 
 ```bash
 make monitor

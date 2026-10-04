@@ -52,12 +52,35 @@ board is replaced.
   centimetres away, read only ~2610, barely above room light. Held at ~1 cm
   and pointed straight at the sensor, it read ~4045.
 
+## Night reading, LEDs off
+
+**Date:** 2026-10-04, room at night-time light levels
+
+Taken with the LEDs switched off, so it measures the room alone.
+
+| | Readings | Typical |
+|---|---|---|
+| First 17 s | 90–101 | ~97 |
+| After that, settled | 65–75 | **~70** |
+
+The drop from ~97 to ~70 happened in a single step rather than as the
+sensor's usual slow decline, so something in the room most likely got slightly
+darker partway through. **~70 is the night value.** It's below the covered
+reading from the bench test (~150), most likely because that test was done in
+a lit room and covering the sensor by hand let some light through.
+
+Raw, 0.5 s apart:
+101 97 101 95 97 95 95 98 101 99 96 100 99 99 96 99 100 94 93 94 97 93 100 95
+98 97 98 99 95 98 95 99 96 99 93 96 90 80 71 74 67 |
+74 67 67 67 71 74 67 68 67 66 75 70 73 67 73 74 74 71 68 71 72 70 70 67 65 73
+66 66 69 67
+
 ## Still to do
 
-- **Take a real night reading once mounted.** Covering the sensor gives a true
-  zero. A real room at night will likely read higher because of the dome
-  light's own glow, streetlights, or standby LEDs. Measure in the final
-  position, with the LEDs on, before fixing the "dark" threshold.
+- **Take a night reading with the LEDs on, once mounted.** The reading above
+  is the room alone. The sensor also sees the dome light itself, so a night
+  reading with the LEDs on, in the final position, is needed before fixing the
+  "dark" threshold.
 - **Re-check room light in the mounted position.** Angle and placement will
   change it.
 

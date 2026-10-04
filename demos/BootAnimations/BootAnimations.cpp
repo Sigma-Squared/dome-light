@@ -8,6 +8,10 @@
 // along the top row show its number (one dot = animation 1, two dots =
 // animation 2, ...). Each one plays twice, holding full red for a second after
 // each play, and the time it took to reach full red is printed over serial.
+//
+// The reel is built around three favourites - Bloom (#2), Sparks (#4) and
+// Progress bar (#6) - with the other five as variants of them. They share one
+// idea: light travels across the array, arriving amber and settling to red.
 
 #include <Arduino.h>
 #include <FastLED.h>
@@ -29,8 +33,10 @@
 // changed to something whiter while experimenting.
 #define SAFETY_MILLIAMPS 450
 
-// Set to an animation's number to loop just that one; 0 plays the whole reel.
-#define FOCUS        0
+// Which animations to play, by number, in the order listed. Use { 0 } to play
+// all of them. With a single entry, the number dots are skipped and it simply
+// repeats.
+static const uint8_t PLAYLIST[] = { 9 };
 
 CRGB leds[NUM_LEDS];
 static const CRGB ON_RED = CRGB(255, 0, 0);
@@ -47,11 +53,14 @@ static void setColumn(uint8_t x, const CRGB &c) {
   for (uint8_t y = 0; y < HEIGHT; y++) leds[XY(x, y)] = c;
 }
 
-// Position k around the rectangle: along the top row left to right, then back
-// along the bottom row right to left.
-static uint8_t ringIndex(uint8_t k) {
-  k %= NUM_LEDS;
-  return (k < WIDTH) ? XY(k, 0) : XY(NUM_LEDS - 1 - k, 1);
+// Column distance from the middle: 0 for the two centre columns, 3 at the ends.
+static uint8_t centreRing(uint8_t x) {
+  return (x < WIDTH / 2) ? (WIDTH / 2 - 1 - x) : (x - WIDTH / 2);
+}
+
+// Column distance from the nearest end: 0 at the ends, 3 in the middle.
+static uint8_t edgeRing(uint8_t x) {
+  return (WIDTH / 2 - 1) - centreRing(x);
 }
 
 static CRGB red(uint8_t level) { return CRGB(level, 0, 0); }
@@ -78,47 +87,68 @@ static void run(uint32_t ms, Frame frame) {
   }
 }
 
-// --- The animations ---------------------------------------------------------
-// Each one must reach full red within 500ms. They target ~450ms so frame
-// timing can't push them over; the reel measures and prints the real figure.
+// --- The three looks the reel is built from -----------------------------------
 
-// 1. Ember: a quick eased fade-in with a flicker that calms as it brightens.
-static void ember() {
-  run(450, [](uint32_t, uint8_t p) {
-    uint8_t level = ease8InOutCubic(p);
-    uint8_t flicker = (255 - p) / 3;   // strong at the start, gone by the end
-    for (uint8_t i = 0; i < NUM_LEDS; i++) {
-      leds[i] = red(qsub8(level, random8(flicker + 1)));
+// Bloom's look: fading in from black, starting amber and deepening to red as it
+// brightens (the colour shift Sunset used). q is 0..255 progress.
+static CRGB warm(uint8_t q) {
+  return CHSV(scale8(HUE_ORANGE, 255 - q), 255, q);
+}
+
+// Sparks' look: black until `litAt`, then an instant amber pop that settles to
+// red over `settle` ms.
+static CRGB sparkAt(uint32_t t, uint32_t litAt, uint32_t settle) {
+  if (t < litAt) return CRGB::Black;
+  return blend(AMBER, ON_RED, ramp(t, litAt, settle));
+}
+
+// Progress bar's look for one column. `pos` is how far the bar has travelled
+// and `colStart` where this column begins, both in 1/16ths of a column. Red
+// once the bar has passed, glowing amber while the bar is inside it, black
+// before.
+static CRGB progressCell(int32_t pos, int32_t colStart) {
+  if (pos >= colStart + 16) return ON_RED;
+  if (pos > colStart) return blend(CRGB::Black, AMBER, (uint8_t)((pos - colStart) * 16));
+  return CRGB::Black;
+}
+
+// --- The animations ---------------------------------------------------------
+// Each one must reach full red within 500ms. They target at most ~450ms so
+// frame timing can't push them over; the reel measures and prints the real
+// figure.
+
+// 1. Converge (Bloom variant): Bloom in reverse - lights from both ends inward,
+// the amber tips meeting in the middle.
+static void converge() {
+  run(300, [](uint32_t t, uint8_t) {
+    for (uint8_t x = 0; x < WIDTH; x++) {
+      setColumn(x, warm(ease8InOutQuad(ramp(t, edgeRing(x) * 45, 165))));
     }
   });
 }
 
-// 2. Bloom: lights from the two middle columns outward to both edges. Each
-// column comes in amber and deepens to red as it brightens - the same colour
-// shift as Sunset - so the advancing tips of the sweep glow amber while the
-// centre has already turned red.
+// 2. Bloom: lights from the two middle columns outward to both edges, each
+// column arriving amber and deepening to red.
 static void bloom() {
   run(300, [](uint32_t t, uint8_t) {
     for (uint8_t x = 0; x < WIDTH; x++) {
-      uint8_t ring = (x < WIDTH / 2) ? (WIDTH / 2 - 1 - x) : (x - WIDTH / 2);  // 0 = centre
-      uint8_t q = ease8InOutQuad(ramp(t, ring * 45, 165));   // this column's progress
-      setColumn(x, CHSV(scale8(HUE_ORANGE, 255 - q), 255, q));   // amber -> red
+      setColumn(x, warm(ease8InOutQuad(ramp(t, centreRing(x) * 45, 165))));
     }
   });
 }
 
-// 3. Scanner: one fast sweep left to right with a trail, then the array fills.
-static void scanner() {
-  const uint32_t sweepMs = 300;
-  run(sweepMs, [=](uint32_t t, uint8_t) {
-    fadeToBlackBy(leds, NUM_LEDS, 45);
-    setColumn(t * WIDTH / sweepMs, ON_RED);
-  });
-
-  static CRGB from[NUM_LEDS];
-  for (uint8_t i = 0; i < NUM_LEDS; i++) from[i] = leds[i];
-  run(150, [](uint32_t, uint8_t p) {
-    for (uint8_t i = 0; i < NUM_LEDS; i++) leds[i] = blend(from[i], ON_RED, ease8InOutQuad(p));
+// 3. Spark bloom (Sparks + Bloom): sparks that spread from the middle outward.
+// Each pixel's turn comes from its distance to the centre plus a random
+// jitter, so it reads as a crackle that blooms.
+static void sparkBloom() {
+  static uint16_t litAt[NUM_LEDS];
+  for (uint8_t x = 0; x < WIDTH; x++) {
+    for (uint8_t y = 0; y < HEIGHT; y++) {
+      litAt[XY(x, y)] = centreRing(x) * 70 + random8(61);   // latest: 270ms
+    }
+  }
+  run(400, [](uint32_t t, uint8_t) {
+    for (uint8_t i = 0; i < NUM_LEDS; i++) leds[i] = sparkAt(t, litAt[i], 120);
   });
 }
 
@@ -137,29 +167,23 @@ static void sparks() {
   const uint32_t gap = 22, settle = 90;              // 16 x 22 + 90 = 442ms
   run(NUM_LEDS * gap + settle, [=](uint32_t t, uint8_t) {
     for (uint8_t k = 0; k < NUM_LEDS; k++) {
-      uint32_t litAt = k * gap;
-      CRGB c = CRGB::Black;
-      if (t >= litAt) {
-        c = blend(AMBER, ON_RED, ramp(t, litAt, settle));   // pop, then settle
-      }
-      leds[order[k]] = c;
+      leds[order[k]] = sparkAt(t, k * gap, settle);
     }
   });
 }
 
-// 5. Heartbeat: one quick "lub-dub", then straight up to full.
-static uint8_t pulse(uint32_t t, uint32_t centre, uint32_t halfWidth, uint8_t peak) {
-  uint32_t d = (t > centre) ? t - centre : centre - t;
-  if (d >= halfWidth) return 0;
-  uint8_t shape = 255 - d * 255 / halfWidth;
-  return scale8(ease8InOutQuad(shape), peak);
-}
-
-static void heartbeat() {
-  run(450, [](uint32_t t, uint8_t) {
-    uint8_t beat = qadd8(pulse(t, 60, 50, 140), pulse(t, 170, 60, 255));
-    uint8_t rise = ease8InOutCubic(ramp(t, 250, 200));
-    fill_solid(leds, NUM_LEDS, red(beat > rise ? beat : rise));
+// 5. Spark sweep (Sparks + Progress bar): sparks that sweep left to right.
+// Each pixel's turn comes from its column plus a random jitter, so a ragged,
+// crackling front crosses the array.
+static void sparkSweep() {
+  static uint16_t litAt[NUM_LEDS];
+  for (uint8_t x = 0; x < WIDTH; x++) {
+    for (uint8_t y = 0; y < HEIGHT; y++) {
+      litAt[XY(x, y)] = x * 35 + random8(71);   // latest: 315ms
+    }
+  }
+  run(440, [](uint32_t t, uint8_t) {
+    for (uint8_t i = 0; i < NUM_LEDS; i++) leds[i] = sparkAt(t, litAt[i], 120);
   });
 }
 
@@ -167,42 +191,50 @@ static void heartbeat() {
 // as it fills, then turns red once the bar has passed it.
 static void progressBar() {
   run(450, [](uint32_t, uint8_t p) {
-    uint32_t pos = (uint32_t)p * WIDTH * 16 / 255;   // in 1/16ths of a column
+    int32_t pos = (int32_t)p * WIDTH * 16 / 255;
+    for (uint8_t x = 0; x < WIDTH; x++) setColumn(x, progressCell(pos, x * 16));
+  });
+}
+
+// 7. Split bars (Progress bar variant): two bars racing in opposite directions
+// - the top row fills left to right while the bottom row fills right to left,
+// their amber edges crossing in the middle.
+static void splitBars() {
+  run(400, [](uint32_t, uint8_t p) {
+    int32_t pos = (int32_t)p * WIDTH * 16 / 255;
     for (uint8_t x = 0; x < WIDTH; x++) {
-      uint32_t colStart = x * 16;
-      CRGB c = CRGB::Black;
-      if (pos >= colStart + 16) {
-        c = ON_RED;
-      } else if (pos > colStart) {
-        c = blend(CRGB::Black, AMBER, (uint8_t)((pos - colStart) * 16));
-      }
-      setColumn(x, c);
+      leds[XY(x, 0)] = progressCell(pos, x * 16);
+      leds[XY(x, 1)] = progressCell(pos, (WIDTH - 1 - x) * 16);
     }
   });
 }
 
-// 7. Sunset: a dim amber glow that deepens into red as it brightens.
-static void sunset() {
-  run(450, [](uint32_t, uint8_t p) {
-    uint8_t hue = scale8(HUE_ORANGE, 255 - p);   // orange -> red
-    uint8_t val = ease8InOutCubic(p);
-    uint8_t shimmer = (255 - p) / 6;
-    for (uint8_t i = 0; i < NUM_LEDS; i++) {
-      leds[i] = CHSV(hue, 255, qsub8(val, random8(shimmer + 1)));
+// 8. Slant wipe (Progress bar variant): a left-to-right fill where the top row
+// leads the bottom by a column and a half, so the amber front is a diagonal.
+static void slantWipe() {
+  const int32_t lag = 24;                          // 1.5 columns, in 1/16ths
+  const int32_t travel = WIDTH * 16 + lag;         // until the bottom row is done
+  run(450, [=](uint32_t, uint8_t p) {
+    int32_t pos = (int32_t)p * travel / 255;
+    for (uint8_t x = 0; x < WIDTH; x++) {
+      leds[XY(x, 0)] = progressCell(pos, x * 16);
+      leds[XY(x, 1)] = progressCell(pos - lag, x * 16);
     }
   });
 }
 
-// 8. Orbit: an amber head races once around the rectangle, leaving every pixel
-// it passes lit red.
-static void orbit() {
-  const uint32_t lapMs = 420;
-  run(lapMs, [=](uint32_t t, uint8_t) {
-    uint8_t head = t * NUM_LEDS / lapMs;
-    for (uint8_t k = 0; k < NUM_LEDS; k++) {
-      leds[ringIndex(k)] = (k < head) ? ON_RED : (k == head ? AMBER : CRGB::Black);
+// 9. Bloom snap (Bloom variant): Bloom's middle-out order with no fading and
+// no colour change. Each pair of columns switches straight from off to full
+// red, one pair every 37ms, starting with the centre.
+static void bloomSnap() {
+  const uint32_t step = 37;
+  run(3 * step, [=](uint32_t t, uint8_t) {
+    for (uint8_t x = 0; x < WIDTH; x++) {
+      setColumn(x, (t >= centreRing(x) * step) ? ON_RED : CRGB::Black);
     }
   });
+  // The last pair (the ends) switches on as this returns: playTimed() sets
+  // full red at 3 x step.
 }
 
 struct Animation {
@@ -211,35 +243,37 @@ struct Animation {
 };
 
 static const Animation ANIMATIONS[] = {
-  {"Ember",        ember},
+  {"Converge",     converge},
   {"Bloom",        bloom},
-  {"Scanner",      scanner},
+  {"Spark bloom",  sparkBloom},
   {"Sparks",       sparks},
-  {"Heartbeat",    heartbeat},
+  {"Spark sweep",  sparkSweep},
   {"Progress bar", progressBar},
-  {"Sunset",       sunset},
-  {"Orbit",        orbit},
+  {"Split bars",   splitBars},
+  {"Slant wipe",   slantWipe},
+  {"Bloom snap",   bloomSnap},
 };
 static const uint8_t NUM_ANIMATIONS = sizeof(ANIMATIONS) / sizeof(ANIMATIONS[0]);
 
 // --- Reel -------------------------------------------------------------------
 
-// n dim dots along the top row, so you can tell which animation is next.
+// n dim dots, so you can tell which animation is next: the top row counts
+// 1-8, and the bottom row continues from 9.
 static void showNumber(uint8_t n) {
   FastLED.clear();
-  for (uint8_t x = 0; x < n && x < WIDTH; x++) leds[XY(x, 0)] = red(25);
+  for (uint8_t k = 0; k < n && k < NUM_LEDS; k++) leds[XY(k % WIDTH, k / WIDTH)] = red(25);
   FastLED.show();
   delay(1000);
   FastLED.clear(true);
   delay(400);
 }
 
-// Hold the finished "on" state, then fade out.
+// Hold the finished "on" state, then switch off - instantly, so the reel's own
+// transition never looks like part of an animation.
 static void holdAndFade() {
   delay(1000);
-  run(400, [](uint32_t, uint8_t p) { fill_solid(leds, NUM_LEDS, red(255 - p)); });
   FastLED.clear(true);
-  delay(600);
+  delay(800);
 }
 
 // Play one animation, force full red, and report how long it took to get
@@ -262,17 +296,26 @@ void setup() {
   FastLED.clear(true);
 }
 
+// Show the animation's number, then play it twice: at under half a second,
+// one viewing is easy to miss. `solo` (a one-entry playlist) skips the number
+// and plays once, since it's about to repeat anyway.
+static void playEntry(uint8_t number, bool solo) {
+  if (number < 1 || number > NUM_ANIMATIONS) return;
+  const Animation &a = ANIMATIONS[number - 1];
+  if (!solo) showNumber(number);
+  for (uint8_t pass = 1; pass <= (solo ? 1 : 2); pass++) {
+    uint32_t ms = playTimed(a);
+    Serial.printf("%u/%u %-12s pass %u: full red at %lu ms\n",
+                  number, NUM_ANIMATIONS, a.name, pass, (unsigned long)ms);
+    holdAndFade();
+  }
+}
+
 void loop() {
-  for (uint8_t i = 0; i < NUM_ANIMATIONS; i++) {
-    if (FOCUS && i != FOCUS - 1) continue;
-    if (!FOCUS) showNumber(i + 1);
-    // Twice in a row in the full reel: at under half a second, one viewing is
-    // easy to miss. When focused on one animation it just repeats anyway.
-    for (uint8_t pass = 1; pass <= (FOCUS ? 1 : 2); pass++) {
-      uint32_t ms = playTimed(ANIMATIONS[i]);
-      Serial.printf("%u/%u %-12s pass %u: full red at %lu ms\n",
-                    i + 1, NUM_ANIMATIONS, ANIMATIONS[i].name, pass, (unsigned long)ms);
-      holdAndFade();
-    }
+  const uint8_t count = sizeof(PLAYLIST) / sizeof(PLAYLIST[0]);
+  if (count == 1 && PLAYLIST[0] == 0) {
+    for (uint8_t n = 1; n <= NUM_ANIMATIONS; n++) playEntry(n, false);
+  } else {
+    for (uint8_t i = 0; i < count; i++) playEntry(PLAYLIST[i], count == 1);
   }
 }
