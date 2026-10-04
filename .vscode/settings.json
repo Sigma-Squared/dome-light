@@ -1,0 +1,10 @@
+{
+  // Arduino/FastLED/pico-sdk headers are C++, and .ino is C++ too as far as
+  // the editor is concerned.
+  "files.associations": {
+    "*.ino": "cpp",
+    "*.h": "cpp"
+  },
+  "C_Cpp.errorSquiggles": "enabled",
+  "[cpp]": { "editor.formatOnSave": false }
+}

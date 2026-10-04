@@ -1,0 +1,36 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "DomeLight: compile",
+      "type": "shell",
+      "command": "make",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": "$gcc"
+    },
+    {
+      "label": "DomeLight: upload (USB)",
+      "type": "shell",
+      "command": "make upload",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "problemMatcher": "$gcc"
+    },
+    {
+      "label": "DomeLight: upload (BOOTSEL / UF2)",
+      "type": "shell",
+      "command": "make uf2",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "problemMatcher": "$gcc"
+    },
+    {
+      "label": "DomeLight: serial monitor",
+      "type": "shell",
+      "command": "make monitor",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    }
+  ]
+}

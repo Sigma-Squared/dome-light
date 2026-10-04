@@ -1,0 +1,13 @@
+# arduino-cli build profile. The platform_index_url below points at the
+# earlephilhower arduino-pico core, so no global board-manager URL has to be
+# registered - `arduino-cli compile -m rp2040zero` resolves everything here.
+profiles:
+  rp2040zero:
+    fqbn: rp2040:rp2040:waveshare_rp2040_zero
+    platforms:
+      - platform: rp2040:rp2040 (6.0.0)
+        platform_index_url: https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+    libraries:
+      - FastLED (3.10.5)
+
+default_profile: rp2040zero
