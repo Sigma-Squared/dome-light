@@ -15,10 +15,12 @@ dome-light-final/
 ├── CALIBRATION.md       # photoresistor readings: dark, room light, flashlight
 ├── settings.md          # chosen day/night brightness and what's still open
 ├── .vscode/             # IntelliSense + build tasks
-└── src/
-    ├── DomeLight.cpp    # the code
-    ├── src.ino          # required entry point, named after the folder (empty)
-    └── sketch.yaml      # pinned core + library versions
+├── src/
+│   ├── DomeLight.cpp    # the code
+│   ├── src.ino          # required entry point, named after the folder (empty)
+│   └── sketch.yaml      # pinned core + library versions
+└── demos/
+    └── BootAnimations/  # demo reel of boot-up animation ideas
 ```
 
 ## Wiring
@@ -49,6 +51,26 @@ brightness 191/255 | light 2381/4095
   a USB port's 500 mA. Nothing limits current, so **don't switch to white or
   other bright mixed colours while on USB**: full white is ~710 mA or more, and
   the board has no fuse.
+
+## Boot animation demos
+
+[`demos/BootAnimations/`](demos/BootAnimations/BootAnimations.cpp) is a
+separate sketch that loops through eight boot-up animation ideas: Ember, Bloom,
+Scanner, Sparks, Heartbeat, Progress bar, Sunset and Orbit. Each one reaches
+steady full red within 500 ms. Before each animation, dim dots show its number,
+and the time each one takes to reach full red is printed over serial.
+
+**Bloom** (#2) is the current favourite: it lights from the middle outward in
+about 300 ms, with the advancing edges coming in amber and deepening to red.
+Set `FOCUS` at the top of the file to an animation's number to loop just that
+one.
+
+```bash
+make upload SKETCH=demos/BootAnimations
+```
+
+This replaces the DomeLight firmware on the board. Run `make upload` to put it
+back.
 
 ## The photoresistor
 
